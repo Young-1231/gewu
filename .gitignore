@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+*.egg-info/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 环境与密钥
+.env
+
+# 生成产物
+reports/
+*.png
+!docs/**/*.png
+
+# 数据缓存
+.gewu/
+*.parquet
+!tests/fixtures/**/*.parquet
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
