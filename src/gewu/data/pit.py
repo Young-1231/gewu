@@ -16,8 +16,13 @@ from datetime import date
 import pandas as pd
 
 
-def report_visible_date(period_end: date) -> date:
-    """法定披露截止日；非标准期末（极少见）按期末 + 120 天兜底。"""
+def report_visible_date(period_end: date, announced: date | None = None) -> date:
+    """财报可见日期：优先真实公告日（巨潮），缺失时退回法定披露截止日。
+
+    非标准期末（极少见）按期末 + 120 天兜底。
+    """
+    if announced is not None:
+        return announced
     month_day = (period_end.month, period_end.day)
     if month_day == (3, 31):
         return date(period_end.year, 4, 30)
@@ -30,10 +35,19 @@ def report_visible_date(period_end: date) -> date:
     return period_end + pd.Timedelta(days=120).to_pytimedelta()
 
 
-def filter_periods_pit(periods: pd.Series, as_of: date) -> pd.Series:
-    """对报告期末序列返回布尔掩码：该期财报在 as_of 时点是否已（依法）可见。"""
+def filter_periods_pit(
+    periods: pd.Series, as_of: date, announced_map: dict[date, date] | None = None
+) -> pd.Series:
+    """对报告期末序列返回布尔掩码：该期财报在 as_of 时点是否已可见。
+
+    announced_map：报告期末 → 真实公告日（来自 cninfo/EDGAR）；未覆盖的报告期
+    退回法定截止日，保证任何数据缺口都不会泄漏未来。
+    """
+    announced_map = announced_map or {}
     ends = pd.to_datetime(periods, errors="coerce")
     visible = ends.map(
-        lambda ts: report_visible_date(ts.date()) <= as_of if pd.notna(ts) else False
+        lambda ts: report_visible_date(ts.date(), announced_map.get(ts.date())) <= as_of
+        if pd.notna(ts)
+        else False
     )
     return visible.astype(bool)

@@ -102,6 +102,12 @@ class MockLLM:
                 },
                 ensure_ascii=False,
             )
+        if "考试作答助手" in system:
+            return "A"
+        if "公告问答助手" in system:
+            number = re.search(r"(\d[\d,]*(?:\.\d+)?)\s*(万元|亿元|元|%)", user)
+            quoted = f"{number.group(1)}{number.group(2)}" if number else "（片段中无数字）"
+            return f"根据公告片段，相关数值为 {quoted}（来源见片段标注）。{_MOCK_NOTE}"
         if "基本面分析师" in system:
             lines = [x for x in (fact_line("营业收入同比", "%"), fact_line("归母净利润同比", "%")) if x]
             detail = "；".join(lines) if lines else "财务数据见数据上下文"
@@ -112,6 +118,8 @@ class MockLLM:
             return f"## 技术面观察\n\n{detail}。均线系统与动量指标未给出一致信号。\n\n{_MOCK_NOTE}"
         if "舆情" in system or "新闻" in system:
             return f"## 舆情观察\n\n近期公开新闻以中性事件为主，未发现重大利好或利空催化。\n\n{_MOCK_NOTE}"
+        if "行业横向对比分析师" in system:
+            return f"## 行业对比观察\n\n目标公司估值相对同行处于可比区间，溢价与基本面差异大体匹配。\n\n{_MOCK_NOTE}"
         if "估值分析师" in system:
             lines = [x for x in (fact_line("PE(TTM)", " 倍"), fact_line("市净率", " 倍")) if x]
             detail = "；".join(lines) if lines else "估值数据见数据上下文"

@@ -1,147 +1,162 @@
 # 格物 Gewu
 
-> 格物致知 —— A股优先的金融研究多智能体框架：分析师团队 + 多空辩论 + **数字溯源审计** + **防泄漏 Point-in-Time 评测**
+**A股优先的金融研究多智能体框架** — 分析师团队协作、公告级溯源、防泄漏评测。
+*An A-share-first multi-agent framework for equity research, with number-level provenance auditing and leak-free point-in-time evaluation.*
 
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue)]() [![Python](https://img.shields.io/badge/python-3.12+-blue)]() [![Tests](https://img.shields.io/badge/tests-offline%20%26%20deterministic-brightgreen)]()
+[![CI](https://github.com/Young-1231/gewu/actions/workflows/ci.yml/badge.svg)](https://github.com/Young-1231/gewu/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.12+-blue)](pyproject.toml)
 
-`gewu analyze 600519` 一条命令，产出一份**每个数字都能回溯到数据源**的中文研究报告。
+```bash
+gewu analyze 600519 --peers 000858,000568   # 多智能体研报：四分析师 + 行业对比 + 多空辩论 + 评级
+gewu ask 600519 "2025年度每股分红多少？"      # 公告 RAG 问答：页码级引用
+gewu backtest --universe csi300 --sample 20 --start 2023-12-31   # 防泄漏 PIT 回测
+gewu benchmark --data fineval.csv            # 金融知识基准跑分
+```
 
 ---
 
-## 为什么做这个项目
+## 它做什么
 
-2026 年的开源金融 agent 已经很多（TradingAgents ~85k stars、ai-hedge-fund ~60k、FinRobot 7k+），但经过[系统性调研](docs/research/)（107 个检索/核验子任务、25 个来源交叉验证），三个空白依然真实存在：
+**`gewu analyze`** 对一只 A股/美股生成结构化中文研报：基本面、技术面、舆情、估值四位分析师并行分析（可选行业对比分析师），多空研究员结构化辩论，研究主管给出评级与置信度。每份研报自带**数字溯源审计附录**——正文中每个实质性数字都被核对是否能在 agent 实际看到的数据中找到出处，连模型自己算对的衍生数字也会被标记请人工核验。
 
-| 空白 | 现状（2026-06 实测） | 格物的做法 |
+**`gewu ask`** 基于巨潮资讯的定期报告全文回答问题，答案带页码级引用（如 *《2025年年度报告》第2页*），数字同样过溯源审计。
+
+**`gewu backtest`** 用与生产完全相同的管线做时点走查回测：每个评测时点 agent 只能看到**彼时已公告**的数据，与动量、买入持有基线同 panel 对照，汇总强制附带局限性声明。
+
+**`gewu benchmark`** 对底座模型跑金融多选题基准（FinEval 兼容格式）。
+
+## 核心设计
+
+| 设计 | 实现 | 为什么 |
 |---|---|---|
-| **A股本土数据栈** | TradingAgents 仅靠 Yahoo 后缀覆盖 A股；ai-hedge-fund 锁死美股商业 API；FinRobot 数据层全是美股生态 | akshare 多源降级（东财→新浪→腾讯）+ 巨潮概况 + 东财估值/新闻，全免费、实测可用 |
-| **真正完整开源** | 最大中文竞品 TradingAgents-CN（28k stars）前后端专有授权，v2.0 不开源 | 全仓 Apache-2.0，无保留 |
-| **可信的评测** | FINSABER（KDD 2026）证明该领域的短窗口回测因幸存者偏差/数据窥探**系统性高估** LLM 策略 | 内置 Point-in-Time 防泄漏回测 + 朴素基线同 panel 对照 + 自带局限性声明 |
-
-另外两个所有人都没做的事：
-
-1. **数字溯源审计**：LLM 投研最常见的失败模式是幻觉数字。格物对每份研报做确定性审计——正文中每个实质性数字必须能在 agent 实际看到的数据上下文中找到出处，溯源率和不可溯源清单直接写进报告附录。
-2. **法定披露日 PIT**：历史回测时财报按 A股法定披露截止日判定可见性（年报次年 4-30、三季报当年 10-31……），保守但**零未来信息泄漏**——agent 可能比真实世界晚看到财报，评测偏保守而非偏乐观。
+| **A股本土数据栈** | akshare 多源自动降级（东财→新浪→腾讯）+ 巨潮公告 + 东财估值/新闻，全部免费源 | 头部开源框架（TradingAgents、ai-hedge-fund、FinRobot）均无 A股本土数据源的可用代码路径（[调研](docs/research/)） |
+| **数字溯源审计** | 确定性审计（无 LLM）：报告数字 ←→ agent 输入语料逐一比对，含舍入/单位换算/负号归一 | LLM 投研最高频的失败模式是幻觉数字；事后口头保证不如每份报告自带审计结果 |
+| **真实公告日 PIT** | 财报可见性按巨潮**真实公告时间**（美股按 SEC EDGAR `filed` 申报日）判定，缺失时退回法定披露截止日——任何数据缺口都只会更保守，绝不泄漏未来 | 评测可信的前提；时区与日界处理有专门回归测试 |
+| **诚实评测** | 走查回测复用生产管线、支持按**历史指数成分**抽样（含退市股）、固定种子可复现、强制基线对照与局限声明 | FINSABER（KDD 2026）证明该领域普遍的短窗口回测因幸存者偏差系统性高估 LLM 策略——本项目不重复这个错误 |
+| **完全开源** | 全仓 Apache-2.0，无专有目录 | 最大同类中文项目采用混合授权（前后端闭源） |
 
 ## 架构
 
 ```mermaid
 flowchart LR
-    subgraph DATA[数据层：多源降级 + PIT]
-        AK[akshare<br/>东财→新浪→腾讯] --> CACHE[(parquet 缓存)]
-        YF[yfinance 美股] --> CACHE
-        CACHE --> PIT[Point-in-Time 视图<br/>法定披露日规则]
+    subgraph DATA[数据层：多源降级 + 真实公告日 PIT]
+        AK[akshare 行情/财务/估值/新闻<br/>东财→新浪→腾讯] --> CACHE[(parquet 原子缓存<br/>损坏自愈)]
+        CN[巨潮 cninfo<br/>公告列表/PDF/公告日] --> CACHE
+        US[yfinance + SEC EDGAR<br/>filed 申报日] --> CACHE
+        CACHE --> PIT[Point-in-Time 视图]
     end
-    PIT --> CTX[数据上下文渲染<br/>数字由代码预计算]
+    PIT --> CTX[数据上下文渲染<br/>所有数字代码预计算]
     subgraph GRAPH[LangGraph 研究部门]
-        CTX --> F[基本面分析师]
-        CTX --> T[技术面分析师]
-        CTX --> N[舆情分析师]
-        CTX --> V[估值分析师]
-        F & T & N & V --> BULL[🐂 多头研究员]
-        BULL <-->|N 轮辩论| BEAR[🐻 空头研究员]
-        BEAR --> DIR[研究主管<br/>评级+置信度 JSON]
+        CTX --> F[基本面] & T[技术面] & N[舆情] & V[估值] & P[行业对比*]
+        F & T & N & V & P --> BULL[多头研究员]
+        BULL <-->|N 轮辩论| BEAR[空头研究员]
+        BEAR --> DIR[研究主管<br/>评级 + 置信度]
     end
-    DIR --> REPORT[中文研报 markdown + 图表]
-    CTX -.对照语料.-> AUDIT[数字溯源审计<br/>确定性，无 LLM]
-    REPORT --> AUDIT
-    AUDIT --> FINAL[最终报告<br/>含溯源率附录]
+    DIR --> REPORT[中文研报 + 图表]
+    CTX -.对照语料.-> AUDIT[数字溯源审计]
+    REPORT --> AUDIT --> FINAL[最终报告含审计附录]
+    PIT --> RAG[公告 BM25 检索] --> QA[引用式问答] -.-> AUDIT
 ```
 
-关键设计决策（详见 [docs/architecture.md](docs/architecture.md)）：
+\* 行业对比分析师在提供 `--peers` 时启用。设计细节见 [docs/architecture.md](docs/architecture.md)。
 
-- **数字由代码算，LLM 只解读**——技术指标、估值分位、财务增速全部预计算后注入上下文，从源头压制幻觉；
-- **审计语料 = agent 看到的语料**——溯源审计的对照文本就是渲染给 LLM 的数据上下文，所见即所审；
-- **评测与生产同一条代码路径**——回测里跑的就是 `ResearchPipeline` 本身，不存在"评测专用逻辑"。
+## 安装与使用
 
-## 快速开始
+需要 Python 3.12+ 与 [uv](https://docs.astral.sh/uv/)：
 
 ```bash
 git clone https://github.com/Young-1231/gewu && cd gewu
 uv sync
+cp .env.example .env   # 填入任一 OpenAI 兼容端点的 API key（默认 DeepSeek）
+```
 
-# 演示模式（无需 API key；首次运行需联网抓取行情，缓存后可离线复跑）
+```bash
+# 研报（实时）
+uv run gewu analyze 600519
+# 研报 + 行业对比分析师
+uv run gewu analyze 600519 --peers 000858,000568
+# 历史时点研报（PIT：只用彼时已公告的数据）
+uv run gewu analyze 600519 --as-of 2025-04-15
+# 公告问答（首次自动下载 PDF 并建库）
+uv run gewu ask 600519 "主营业务收入的构成是怎样的？"
+# 回测：按 2023 年末沪深300 历史成分抽 20 只，季度评测
+uv run gewu backtest --universe csi300 --sample 20 --start 2023-12-31
+# 基准跑分（自带格式样例；FinEval 等数据请从官方渠道获取）
+uv run gewu benchmark --data data/benchmark_sample.jsonl
+# 无 API key 时验证全链路（不调用真实 LLM；数据抓取仍需联网）
 uv run gewu analyze 600519 --mock
-
-# 真实分析：任一 OpenAI 兼容端点，默认 DeepSeek
-cp .env.example .env   # 填入 GEWU_API_KEY（或 DEEPSEEK_API_KEY / OPENAI_API_KEY）
-uv run gewu analyze 600519                  # 贵州茅台
-uv run gewu analyze AAPL                    # 美股兼容
-uv run gewu analyze 600519 --as-of 2025-04-15   # 历史时点（PIT 视图：彼时年报尚未披露）
 ```
 
-输出示例（`reports/600519_<date>.md`）：评级与置信度、投资要点、四分析师观点、多空辩论纪要、风险提示、价格/估值图表、数据源与 PIT 说明、**数字溯源审计附录**。
+### 配置
 
-### 切换模型
+任一 OpenAI 兼容端点均可（DeepSeek / Qwen / Moonshot / OpenAI / vLLM 自部署）：
 
-```bash
-# .env 中任意 OpenAI 兼容端点
-GEWU_BASE_URL=https://api.deepseek.com   GEWU_MODEL=deepseek-chat      # 默认
-GEWU_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1  GEWU_MODEL=qwen-plus
-GEWU_BASE_URL=https://api.openai.com/v1  GEWU_MODEL=gpt-4.1
-```
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `GEWU_API_KEY` | — | 也接受 `DEEPSEEK_API_KEY` / `OPENAI_API_KEY` |
+| `GEWU_BASE_URL` | `https://api.deepseek.com` | OpenAI 兼容端点 |
+| `GEWU_MODEL` | `deepseek-chat` | 模型名 |
+| `GEWU_DEBATE_ROUNDS` | `2` | 多空辩论轮数 |
+| `GEWU_CACHE_DIR` | `~/.gewu/cache` | 数据缓存目录 |
+| `GEWU_REQUEST_INTERVAL` | `1.0` | 上游请求最小间隔（秒），保护免费接口 |
 
-## 评测：证明它有用（或诚实地证明它没用）
+## 数据源
 
-```bash
-# Point-in-Time 走查回测：评级 → 60 个交易日前向收益，对照动量/买入持有基线
-uv run gewu backtest --symbols 600519,000858,601318 --start 2024-06-30 --end 2025-12-31
+| 数据 | 主源 | 降级 | 备注 |
+|---|---|---|---|
+| A股日线 | 东方财富 | 新浪 → 腾讯 | 前复权；任一可用即工作 |
+| A股财务 | 新浪财务指标 + 同花顺摘要 | — | 报告期粒度 |
+| A股估值 | 东财数据中心（PE/PB/市值日频） | 百度股市通 | 五年分位由代码计算 |
+| 公告/公告日 | 巨潮资讯官方 API | 法定披露截止日兜底 | PDF 全文本地缓存 |
+| 美股财务 | **SEC EDGAR**（真实 `filed` 日期） | yfinance + 保守滞后 | data.sec.gov 对部分地区 IP 返回 403，自动降级 |
+| 美股行情/新闻 | yfinance | — | 注意 Yahoo 限流 |
+| 历史指数成分 | baostock | — | 含退市股，防幸存者偏差回测的基础 |
 
-# 防幸存者偏差：按 start 日期的沪深300「历史成分」抽样（baostock，含已退市股票）
-uv run gewu backtest --universe csi300 --sample 20 --start 2023-12-31 --seed 42
-```
+所有上游请求经原子写入的本地 parquet 缓存（损坏自动清除重抓）与全局限速。
 
-输出：方向命中率、CR/年化/夏普/最大回撤对照表、评级分布、平均溯源率，以及**强制附带的局限性声明**（评测窗口、牛熊状态偏差、成本未建模等——参照 FINSABER 方法论自查清单）。
+## 评测立场
 
-> 本项目不宣称"显著盈利能力"。FINSABER（KDD 2026）已证明此前文献中 LLM 择时优势在长周期、宽截面、含退市股的回测下显著衰减。格物的评测模块存在的意义恰恰是：**让任何这样的宣称必须先过防泄漏回测这一关。**
-
-## 测试
-
-```bash
-uv run pytest      # 全离线、确定性（夹具为 2026-06-11 抓取的真实数据快照）
-uv run ruff check src tests
-```
-
-覆盖：PIT 边界（法定披露日当天/前一天）、缓存退化语义、溯源审计契约（舍入/单位换算/负数/年份豁免）、多空辩论轮数、端到端管线、回测指标。
+本项目**不宣称盈利能力**。FINSABER（[KDD 2026](https://arxiv.org/abs/2505.07078)）已证明：此前文献报告的 LLM 择时优势，在长周期、宽截面、含退市股的回测下显著衰减，且 LLM 策略存在"牛市过度保守、熊市过度激进"的系统性偏差。`gewu backtest` 的存在意义是让任何效果宣称必须先通过防泄漏回测，输出的每份汇总都强制附带局限性自查清单。
 
 ## 项目结构
 
 ```
 src/gewu/
-├── config.py        # OpenAI 兼容配置，默认 DeepSeek
-├── llm.py           # ChatLLM（重试/JSON模式）+ MockLLM（离线演示）
-├── data/            # 多源降级 + parquet 缓存 + PIT 规则 + 技术指标
-├── agents/          # LangGraph 图：4 分析师 ∥ → 多空辩论 ⇄ → 研究主管 → 溯源审计
-├── report/          # 中文研报装配 + matplotlib 图表
-├── evaluate/        # PIT 走查回测 + 基线 + 指标 + 历史成分股票池
-└── cli.py           # gewu analyze / backtest / fetch
+├── config.py / llm.py     # OpenAI 兼容配置与客户端（含离线 Mock）
+├── data/                  # 多源降级、原子缓存、PIT 规则、技术指标、巨潮/EDGAR 适配
+├── agents/                # LangGraph 图、五类分析师、多空辩论、研究主管、溯源审计
+├── rag/                   # 公告库、BM25 检索、引用式问答
+├── report/                # 研报装配与图表
+├── evaluate/              # PIT 回测、基线、指标、历史成分股票池、基准跑分
+└── cli.py                 # analyze / ask / backtest / benchmark / fetch
+tests/                     # 60+ 项全离线确定性测试（真实数据快照夹具）
+docs/                      # 架构文档、调研报告、示例研报
 ```
 
 ## 已知局限
 
-- 新闻接口只保留近期条目 → 历史回测时点的舆情覆盖有限（报告中会如实标注）；
-- 财报可见性按法定截止日保守判定，真实公告日集成（巨潮）在路线图上；
-- 美股为兼容档：估值历史分位等深度数据弱于 A股（SEC EDGAR 集成在路线图上）；
-- 评级为离散仓位，回测未建模交易成本。
+- 免费新闻接口只保留近期条目，历史回测时点的舆情覆盖有限（报告中如实标注）；
+- 公司概况无法回溯历史时点（已做最小化处理并标注残余前视风险）；
+- 前复权价格以抓取日为锚，评测只使用收益率，不受影响；
+- 回测为离散仓位，未建模交易成本与流动性；
+- BM25 为词面检索，语义改写问题的召回弱于 embedding 方案（检索器可插拔）。
 
 ## 路线图
 
-- [ ] 巨潮公告原文 RAG（财报问答、公告事件抽取）
-- [ ] 真实公告日数据替代法定截止日近似
-- [ ] FinEval Financial Agent 子集（616 题）跑分
-- [ ] 行业横向对比 agent（同行估值/景气度）
-- [ ] SEC EDGAR 集成，美股升级为一等公民
+- [ ] Embedding 检索与重排（可插拔接入 BGE 等中文向量模型）
+- [ ] 美股财报全文问答（SEC EDGAR 文档库）
+- [ ] 公告事件流监控（减持/质押/业绩预告的结构化抽取）
+- [ ] Web UI
 
 ## 调研与参考
 
-本项目的每个设计决策都有据可查：[docs/research/](docs/research/) 含完整的竞品调研（25 来源、3 票对抗核验）、数据源工程可行性报告、商业产品与招聘趋势分析。
+设计决策的完整依据见 [docs/research/](docs/research/)：竞品全景（多来源对抗核验）、数据源工程可行性、商业产品对比。
 
-核心参考文献：TradingAgents ([arXiv:2412.20138](https://arxiv.org/abs/2412.20138))、FinRobot ([arXiv:2405.14767](https://arxiv.org/abs/2405.14767))、FINSABER ([arXiv:2505.07078](https://arxiv.org/abs/2505.07078), KDD 2026)、FinEval ([arXiv:2308.09975](https://arxiv.org/abs/2308.09975), NAACL 2025)。
+核心参考：TradingAgents ([arXiv:2412.20138](https://arxiv.org/abs/2412.20138)) · FinRobot ([arXiv:2405.14767](https://arxiv.org/abs/2405.14767)) · FINSABER ([arXiv:2505.07078](https://arxiv.org/abs/2505.07078)) · FinEval ([arXiv:2308.09975](https://arxiv.org/abs/2308.09975))
 
-## 免责声明
+## 贡献与许可
 
-本项目仅用于技术研究与演示，AI 生成的分析不构成任何投资建议。数字溯源审计验证数字出处，不验证观点正确性。市场有风险，投资需谨慎。
+欢迎 Issue 与 PR，约定见 [CONTRIBUTING.md](CONTRIBUTING.md)。代码以 [Apache-2.0](LICENSE) 发布，全仓库无保留目录。
 
-## License
-
-[Apache-2.0](LICENSE)（全仓库，无保留目录）
+**免责声明**：本项目仅用于技术研究，AI 生成的分析不构成投资建议。数字溯源审计验证数字出处，不验证观点正确性。市场有风险，投资需谨慎。

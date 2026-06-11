@@ -39,6 +39,7 @@ def analyze(
     out: Path = typer.Option(Path("reports"), "--out", help="研报输出目录"),
     rounds: int = typer.Option(None, "--rounds", help="多空辩论轮数（默认 2）"),
     no_charts: bool = typer.Option(False, "--no-charts", help="跳过图表生成"),
+    peers: str = typer.Option(None, "--peers", help="逗号分隔的同行代码，启用行业对比分析师（如 000858,000568）"),
 ):
     """生成一份带数字溯源审计的研究报告。"""
     from gewu.agents import ResearchPipeline
@@ -50,8 +51,11 @@ def analyze(
     )
     target_date = _parse_date(as_of)
     out.mkdir(parents=True, exist_ok=True)
+    peer_list = [p.strip() for p in peers.split(",") if p.strip()] if peers else None
 
-    result = pipeline.run(symbol, target_date, charts_dir=None if no_charts else out)
+    result = pipeline.run(
+        symbol, target_date, charts_dir=None if no_charts else out, peers=peer_list
+    )
 
     report_path = out / f"{result.symbol}_{result.as_of}.md"
     report_path.write_text(result.report_md, encoding="utf-8")
@@ -137,6 +141,38 @@ def backtest(
 
 
 @app.command()
+def ask(
+    symbol: str = typer.Argument(..., help="A股代码（6 位数字）"),
+    question: str = typer.Argument(..., help="针对公司定期报告的问题"),
+    as_of: str = typer.Option(None, "--as-of", help="PIT 基准日：只用此前已公告的报告回答"),
+    mock: bool = typer.Option(False, "--mock", help="Mock 模式：不调用真实 LLM"),
+    top_k: int = typer.Option(6, "--top-k", help="检索片段数"),
+    docs: int = typer.Option(3, "--docs", help="纳入问答的最近定期报告份数"),
+):
+    """公告 RAG 问答：基于巨潮定期报告全文，带页码引用与数字溯源审计。"""
+    from gewu.llm import build_llm
+    from gewu.rag import ask as rag_ask
+
+    settings = Settings.load()
+    console.print("[dim]· 加载公告库（首次需下载 PDF，约数十秒）…[/dim]")
+    result = rag_ask(
+        symbol, question, build_llm(settings, mock=mock), settings,
+        as_of=_parse_date(as_of), top_k=top_k, max_docs=docs,
+    )
+    console.print(Panel(result.answer, title=f"{symbol} · 公告问答", border_style="cyan"))
+    rate = result.grounding.rate
+    console.print(
+        f"依据文档：{'；'.join(result.sources)}\n"
+        f"数字溯源率：{f'{rate:.1%}' if rate is not None else 'N/A'}"
+        f"（{result.grounding.grounded}/{result.grounding.total}）"
+    )
+    for item in result.grounding.ungrounded[:5]:
+        console.print(f"[yellow]⚠ 待核验数字：{item['text']} —— …{item['context']}…[/yellow]")
+    if mock:
+        console.print("[yellow]⚠ Mock 模式输出仅用于演示流程。[/yellow]")
+
+
+@app.command()
 def fetch(
     symbol: str = typer.Argument(..., help="股票代码"),
     as_of: str = typer.Option(None, "--as-of", help="基准日 YYYY-MM-DD"),
@@ -150,6 +186,30 @@ def fetch(
     console.print(f"数据源：{bundle.sources}")
     for warning in bundle.warnings:
         console.print(f"[yellow]⚠ {warning}[/yellow]")
+
+
+@app.command()
+def benchmark(
+    data: Path = typer.Option(Path("data/benchmark_sample.jsonl"), "--data", help="题集（.jsonl/.csv，FinEval 兼容字段）"),
+    limit: int = typer.Option(None, "--limit", help="只跑前 N 题"),
+    mock: bool = typer.Option(False, "--mock", help="Mock 模式：验证跑分管线本身"),
+    out: Path = typer.Option(Path("reports/benchmark"), "--out", help="结果输出目录"),
+):
+    """金融多选题基准跑分（FinEval 兼容；仓库不分发基准数据，自带格式样例）。"""
+    from gewu.evaluate.benchmark import load_questions, run_benchmark
+    from gewu.llm import build_llm
+
+    settings = Settings.load()
+    questions = load_questions(data)
+    console.print(f"题集：{data}（{len(questions)} 题）")
+    out.mkdir(parents=True, exist_ok=True)
+
+    details, result = run_benchmark(build_llm(settings, mock=mock), questions, limit=limit, on_event=_emit)
+    details.to_csv(out / "details.csv", index=False)
+    summary = result.to_markdown(str(data))
+    (out / "summary.md").write_text(summary, encoding="utf-8")
+    console.print(summary)
+    console.print(f"\n明细：{out / 'details.csv'}")
 
 
 @app.command()

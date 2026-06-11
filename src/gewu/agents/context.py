@@ -94,6 +94,12 @@ def render_valuation(bundle: DataBundle) -> str:
     return "\n".join(parts)
 
 
+def render_peers(target: dict, peers: list[dict]) -> str:
+    """同行对比表：目标公司置顶标注，数字与主上下文同口径进入审计语料。"""
+    table = pd.DataFrame([{**target, "名称": f"{target['名称']}（本标的）"}, *peers])
+    return "【同行对比表（与主标的同一 PIT 口径；总市值单位：亿元）】\n" + table.to_string(index=False)
+
+
 def render_all(bundle: DataBundle) -> dict[str, str]:
     """每个分析师角色 → 其专属数据上下文。"""
     header = render_header(bundle)

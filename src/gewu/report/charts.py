@@ -67,14 +67,17 @@ def _render_price(bundle: DataBundle, path: Path) -> bool:
 
 def _render_valuation(bundle: DataBundle, path: Path) -> bool:
     valuation = bundle.valuation
-    if valuation is None or valuation.empty or "pe_ttm" not in valuation.columns:
+    if valuation is None or valuation.empty:
         return False
-    df = valuation.tail(1250).dropna(subset=["pe_ttm"])
+    column, label = ("pe_ttm", "PE(TTM)") if "pe_ttm" in valuation.columns else ("pe_static", "PE(静态)")
+    if column not in valuation.columns:
+        return False
+    df = valuation.tail(1250).dropna(subset=[column])
     if df.empty:
         return False
-    series = df["pe_ttm"]
+    series = df[column]
     fig, ax = plt.subplots(figsize=(10, 4), constrained_layout=True)
-    ax.plot(df["date"], series, linewidth=1.2, label="PE(TTM)")
+    ax.plot(df["date"], series, linewidth=1.2, label=label)
     for quantile, style in ((0.2, ":"), (0.5, "--"), (0.8, ":")):
         ax.axhline(
             series.quantile(quantile),
@@ -83,7 +86,7 @@ def _render_valuation(bundle: DataBundle, path: Path) -> bool:
             color="gray",
             label=f"{int(quantile * 100)}分位",
         )
-    ax.set_title(f"{bundle.name}（{bundle.symbol}）PE(TTM) 五年走廊 ｜ 截至 {bundle.as_of}")
+    ax.set_title(f"{bundle.name}（{bundle.symbol}）{label} 五年走廊 ｜ 截至 {bundle.as_of}")
     ax.legend(loc="best", fontsize=9)
     ax.grid(alpha=0.25)
     fig.savefig(path, dpi=120)

@@ -19,13 +19,17 @@ from gewu.llm import LLM
 ANALYST_ROLES = ("fundamental", "technical", "news", "valuation")
 
 
-def build_graph(llm: LLM, bundle: DataBundle, debate_rounds: int = 2):
+def build_graph(llm: LLM, bundle: DataBundle, debate_rounds: int = 2, peer_context: str | None = None):
     debate_rounds = max(1, debate_rounds)  # 拓扑保证 bull→bear 至少各发言一轮
     contexts = render_all(bundle)
     header = render_header(bundle)
+    roles = list(ANALYST_ROLES)
+    if peer_context:  # 提供同行数据时启用第五分析师
+        contexts["peer"] = f"{header}\n\n{peer_context}"
+        roles.append("peer")
 
     graph = StateGraph(ResearchState)
-    for role in ANALYST_ROLES:
+    for role in roles:
         graph.add_node(role, make_analyst_node(role, llm, contexts[role]))
         graph.add_edge(START, role)
 
@@ -33,7 +37,7 @@ def build_graph(llm: LLM, bundle: DataBundle, debate_rounds: int = 2):
     graph.add_node("bear", make_debater_node("bear", llm, header))
     graph.add_node("director", make_director_node(llm, header, bundle.warnings))
 
-    graph.add_edge(list(ANALYST_ROLES), "bull")  # 屏障：四分析师全部完成后开始辩论
+    graph.add_edge(roles, "bull")  # 屏障：全部分析师完成后开始辩论
     graph.add_edge("bull", "bear")
 
     def after_bear(state: ResearchState) -> str:

@@ -13,7 +13,7 @@ from datetime import date, timedelta
 import pandas as pd
 
 from gewu.config import Settings
-from gewu.data import akshare_source, yahoo_source
+from gewu.data import akshare_source, cninfo_source, edgar_source, yahoo_source
 from gewu.data.bundle import DataBundle
 from gewu.data.cache import SOURCE_ATTR, DataCache
 from gewu.data.indicators import enrich_indicators, summarize_technical
@@ -75,6 +75,22 @@ class DataService:
 
     _DAILY_REQUIRED = ("date", "close")
 
+    def peer_snapshot(self, symbol: str, as_of: date | None = None) -> dict:
+        """同行对比快照：与主标的同一 PIT 口径的估值/成长/盈利关键值。"""
+        bundle = self.load_bundle(symbol, as_of)
+        return {
+            "代码": bundle.symbol,
+            "名称": bundle.name,
+            "PE(TTM)": bundle.valuation_summary.get("PE(TTM)"),
+            "PE五年分位": bundle.valuation_summary.get("PE五年分位"),
+            "市净率": bundle.valuation_summary.get("市净率"),
+            "总市值(亿元)": bundle.valuation_summary.get("总市值"),
+            "营收同比%": bundle.fundamental_summary.get("营业收入同比"),
+            "净利同比%": bundle.fundamental_summary.get("归母净利润同比"),
+            "ROE%": bundle.fundamental_summary.get("ROE"),
+            "60日涨跌%": bundle.technical_summary.get("ret_60d"),
+        }
+
     def load_daily_full(self, symbol: str) -> pd.DataFrame:
         """未截断的全量日线——仅供评测模块计算前向收益，agent 不可见。"""
         if detect_market(symbol) == "ashare":
@@ -120,18 +136,30 @@ class DataService:
             raise RuntimeError(f"{symbol} 在 {as_of} 之前无行情数据")
         daily = enrich_indicators(daily)
 
+        report_dates = cached("report_dates", lambda: cninfo_source.fetch_report_dates(symbol))
+        announced_map: dict[date, date] = {}
+        if report_dates is not None and not report_dates.empty:
+            announced_map = {
+                pd.to_datetime(row["period_end"]).date(): pd.to_datetime(row["announced"]).date()
+                for _, row in report_dates.iterrows()
+            }
+        else:
+            warnings.append("未获取到真实公告日（巨潮），财报可见性退回法定披露截止日近似")
+
         fin = cached(
             "financial_indicators",
             lambda: akshare_source.fetch_financial_indicators(symbol, request_interval=interval),
         )
         if fin is not None and not fin.empty:
-            fin = fin[filter_periods_pit(fin["日期"], as_of).to_numpy()].reset_index(drop=True)
+            fin = fin[filter_periods_pit(fin["日期"], as_of, announced_map).to_numpy()].reset_index(
+                drop=True
+            )
 
         abstract = cached(
             "financial_abstract", lambda: akshare_source.fetch_financial_abstract(symbol, interval)
         )
         if abstract is not None and not abstract.empty:
-            abstract = self._filter_abstract_pit(abstract, as_of)
+            abstract = self._filter_abstract_pit(abstract, as_of, announced_map)
 
         valuation = cached("valuation", lambda: akshare_source.fetch_valuation(symbol, interval))
         if valuation is not None and not valuation.empty:
@@ -169,12 +197,15 @@ class DataService:
         )
 
     @staticmethod
-    def _filter_abstract_pit(abstract: pd.DataFrame, as_of: date) -> pd.DataFrame:
+    def _filter_abstract_pit(
+        abstract: pd.DataFrame, as_of: date, announced_map: dict[date, date] | None = None
+    ) -> pd.DataFrame:
+        announced_map = announced_map or {}
         keep = [c for c in abstract.columns if not re.fullmatch(r"\d{8}", str(c))]
         for col in abstract.columns:
             if re.fullmatch(r"\d{8}", str(col)):
                 period_end = pd.to_datetime(str(col)).date()
-                if report_visible_date(period_end) <= as_of:
+                if report_visible_date(period_end, announced_map.get(period_end)) <= as_of:
                     keep.append(col)
         return abstract[keep]
 
@@ -254,10 +285,28 @@ class DataService:
             raise RuntimeError(f"{symbol} 在 {as_of} 之前无行情数据")
         daily = enrich_indicators(daily)
 
-        fin = cached("financial_indicators", lambda: yahoo_source.fetch_financial_indicators(symbol))
-        if fin is not None and not fin.empty:
-            visible = fin["日期"].dt.date <= as_of - timedelta(days=US_REPORT_LAG_DAYS)
+        # 财务：主源 SEC EDGAR（真实 filed 申报日 → 真 PIT）；不可用时退回 yfinance + 保守滞后
+        fin = cached("financial_indicators_edgar", lambda: edgar_source.fetch_financial_indicators(symbol))
+        edgar_available = fin is not None and not fin.empty
+        if edgar_available:
+            visible = pd.to_datetime(fin["filed"]).dt.date <= as_of
             fin = fin[visible.to_numpy()].reset_index(drop=True)
+        else:
+            warnings.append(
+                "SEC EDGAR 不可用（data.sec.gov 对部分地区 IP 返回 403），"
+                f"财务退回 yfinance 并按 {US_REPORT_LAG_DAYS} 天保守滞后判定可见性"
+            )
+            fin = cached("financial_indicators", lambda: yahoo_source.fetch_financial_indicators(symbol))
+            if fin is not None and not fin.empty:
+                visible = fin["日期"].dt.date <= as_of - timedelta(days=US_REPORT_LAG_DAYS)
+                fin = fin[visible.to_numpy()].reset_index(drop=True)
+
+        # 估值：EDGAR 年度 EPS 按 filed 日阶梯化 → PIT 正确的 PE(静态) 历史序列与分位
+        valuation = None
+        if edgar_available:
+            eps = cached("eps_edgar", lambda: edgar_source.fetch_eps(symbol))
+            if eps is not None and not eps.empty:
+                valuation = edgar_source.build_pe_series(daily, eps)
 
         news = cached("news", lambda: yahoo_source.fetch_news(symbol))
         if news is not None and not news.empty:
@@ -269,15 +318,15 @@ class DataService:
         name = str(profile.get("公司名称") or symbol)
         profile, name = _profile_pit_minimize(profile, name, symbol, as_of, warnings)
 
-        valuation_summary: dict = {}
+        valuation_summary = self._us_valuation_summary(valuation)
         if as_of >= date.today() - timedelta(days=3):
-            # yfinance 的 PE/PB 只有当前快照，无法回溯历史时点 → 仅实时分析提供
+            # 实时分析额外补充 yfinance 当前快照（PE-TTM/PB 无法回溯，历史时点不提供）
             for key, label in (("PE(TTM)", "PE(TTM)"), ("市净率", "市净率")):
                 value = pd.to_numeric(profile.get(key), errors="coerce")
                 if pd.notna(value):
                     valuation_summary[label] = round(float(value), 2)
-        else:
-            warnings.append("美股估值快照无法回溯到历史 as_of 时点，估值摘要为空")
+        elif not valuation_summary:
+            warnings.append("美股估值历史不可用（EDGAR 被拒且快照无法回溯），估值摘要为空")
 
         return DataBundle(
             symbol=symbol,
@@ -288,7 +337,7 @@ class DataService:
             daily=daily,
             financial_indicators=fin,
             financial_abstract=None,
-            valuation=None,
+            valuation=valuation,
             news=news,
             technical_summary=summarize_technical(daily),
             fundamental_summary=self._us_fundamental_summary(fin),
@@ -296,6 +345,21 @@ class DataService:
             sources=sources,
             warnings=warnings,
         )
+
+    @staticmethod
+    def _us_valuation_summary(valuation: pd.DataFrame | None) -> dict:
+        if valuation is None or valuation.empty or "pe_static" not in valuation.columns:
+            return {}
+        window = valuation.tail(1250)
+        last = valuation.iloc[-1]
+        if pd.isna(last.get("pe_static")):
+            return {}
+        current = float(last["pe_static"])
+        summary = {"估值日期": str(pd.to_datetime(last["date"]).date()), "PE(静态)": round(current, 2)}
+        series = pd.to_numeric(window["pe_static"], errors="coerce").dropna()
+        if len(series) > 60:
+            summary["PE五年分位"] = round(float((series <= current).mean() * 100), 1)
+        return summary
 
     @staticmethod
     def _us_fundamental_summary(fin: pd.DataFrame | None) -> dict:

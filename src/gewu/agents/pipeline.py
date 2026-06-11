@@ -24,6 +24,7 @@ _NODE_LABELS = {
     "technical": "技术面分析师",
     "news": "新闻舆情分析师",
     "valuation": "估值分析师",
+    "peer": "行业对比分析师",
     "bull": "多头研究员",
     "bear": "空头研究员",
     "director": "研究主管",
@@ -56,7 +57,11 @@ class ResearchPipeline:
         self._emit = on_event or (lambda message: logger.info(message))
 
     def run(
-        self, symbol: str, as_of: date | None = None, charts_dir: Path | None = None
+        self,
+        symbol: str,
+        as_of: date | None = None,
+        charts_dir: Path | None = None,
+        peers: list[str] | None = None,
     ) -> ResearchResult:
         self._emit(f"加载数据：{symbol} @ {as_of or '今天'}")
         bundle = self.data.load_bundle(symbol, as_of)
@@ -65,7 +70,21 @@ class ResearchPipeline:
             + (f"，警告 {len(bundle.warnings)} 条" if bundle.warnings else "")
         )
 
-        graph = build_graph(self.llm, bundle, self.settings.debate_rounds)
+        peer_context = None
+        if peers:
+            snapshots = []
+            for peer in peers:
+                try:
+                    snapshots.append(self.data.peer_snapshot(peer, bundle.as_of))
+                    self._emit(f"同行数据就绪：{peer}")
+                except Exception as error:
+                    bundle.warnings.append(f"同行 {peer} 数据获取失败：{error}")
+            if snapshots:
+                from gewu.agents.context import render_peers
+
+                peer_context = render_peers(self.data.peer_snapshot(symbol, bundle.as_of), snapshots)
+
+        graph = build_graph(self.llm, bundle, self.settings.debate_rounds, peer_context)
         initial: ResearchState = {
             "symbol": bundle.symbol,
             "name": bundle.name,
@@ -90,6 +109,8 @@ class ResearchPipeline:
         report_body = build_report(bundle, state, charts)
 
         corpus = "\n\n".join(render_all(bundle).values())
+        if peer_context:
+            corpus += "\n\n" + peer_context  # 同行表数字同样要可溯源
         grounding = fact_check.audit(fact_check.extract_audit_region(report_body), corpus)
         report_md = report_body + "\n" + grounding.to_markdown()
         rate_text = f"{grounding.rate:.1%}" if grounding.rate is not None else "N/A"
